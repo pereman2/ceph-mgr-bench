@@ -103,28 +103,40 @@ osdmap_test2() {
 		echo $op >> $DATA
 		#for num_osds in 3000;
 		#for num_osds in 10 20 30 40 50 75;
-		for formatter in j;
+		set -x
+		for formatter in j p;
 		# for formatter in p;
 		do
 			echo $formatter >> $DATA
-			for num_osds in 10 20 30 40 50 75 100 250 500 600 750 900 1000 2000 3000;
 			# for num_osds in 1000;
+			# for num_osds in 10 20 30 40 50;
+			for num_osds in 10 20 30 40 50 75 100 250 500 600 750 900 1000 2000 3000;
 			do
 				echo $num_osds
 				$CEPH config set mgr mgr_inject_num_osds $num_osds
-				set_osds="setosds${num_osds}"
-				$CEPH mgr api get $set_osds
-				to_get="get_test_osdmap${formatter}${num_osds}"
+
+				# this also updates the osd_num and osdmap
+				$CEPH mgr cli get $formatter
+
+				# clear
 				if [ $op = "ttl" ]; then
 					sleep 20
 
 				fi
-				stats=$($CEPH mgr api benchmark get $to_get 1000 $THREADS)
-				# stats=$($CEPH mgr api benchmark get $to_get 1000 1)
-				echo "$num_osds;$stats" >> $DATA
+				stats=$($CEPH mgr cli_benchmark 5000 $THREADS get osd_map)
+				# stats=$($CEPH mgr api benchmark get $to_get 1000 1
+				echo "$num_osds"$'\n'"$stats" >> $DATA
 			done
 		done
 	done
 	$CEPH config set mgr mgr_inject false
 }
+
+# build.latest/bin/ceph mgr module enable cli_api
+# build.latest/bin/ceph mgr cli get j
+# build.latest/bin/ceph mgr cli get osd_map
+# build.latest/bin/ceph config set mgr mgr_inject true
+# build.latest/bin/ceph config set mgr mgr_inject_num_osds 40
+# build.latest/bin/ceph mgr cli get osd_map
+
 osdmap_test2

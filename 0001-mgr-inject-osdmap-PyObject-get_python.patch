@@ -1,17 +1,17 @@
-From 3d95f15e2c3d88ef5489330cbb15fb99d0285060 Mon Sep 17 00:00:00 2001
+From 2252fb6572119bf70378309806eb87d6960856e6 Mon Sep 17 00:00:00 2001
 From: Pere Diaz Bou <pdiazbou@redhat.com>
 Date: Mon, 10 May 2021 16:08:05 +0200
 Subject: [PATCH] mgr: inject osdmap PyObject* get_python
 
 Signed-off-by: Pere Diaz Bou <pdiazbou@redhat.com>
 ---
- src/common/options/global.yaml.in | 36 +++++++++++++++++-----
+ src/common/options/global.yaml.in | 36 +++++++++++++++-----
  src/mgr/ActivePyModules.cc        |  2 +-
  src/mgr/CMakeLists.txt            |  1 +
- src/mgr/ClusterState.h            | 20 +++++++++----
- src/mgr/Injector.cc               | 50 +++++++++++++++++++++++++++++++
- src/mgr/Injector.h                | 19 ++++++++++++
- 6 files changed, 114 insertions(+), 14 deletions(-)
+ src/mgr/ClusterState.h            | 20 ++++++++---
+ src/mgr/Injector.cc               | 56 +++++++++++++++++++++++++++++++
+ src/mgr/Injector.h                | 19 +++++++++++
+ 6 files changed, 120 insertions(+), 14 deletions(-)
  create mode 100644 src/mgr/Injector.cc
  create mode 100644 src/mgr/Injector.h
 
@@ -145,10 +145,10 @@ index 7939cd8eb8f..cec57b875cd 100644
    // call cb(osdmap, pg_map, ...args) with the appropriate locks
 diff --git a/src/mgr/Injector.cc b/src/mgr/Injector.cc
 new file mode 100644
-index 00000000000..9021fbc971b
+index 00000000000..c0fa7ac7384
 --- /dev/null
 +++ b/src/mgr/Injector.cc
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,56 @@
 +// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 +// vim: ts=8 sw=2 smarttab
 +
@@ -162,6 +162,8 @@ index 00000000000..9021fbc971b
 +
 +using namespace std;
 +
++int num_osds = 0;
++OSDMap *osd_map_global = nullptr;
 +int64_t Injector::get_num_osds() {
 +  return g_conf().get_val<int64_t>("mgr_inject_num_osds");
 +}
@@ -175,20 +177,24 @@ index 00000000000..9021fbc971b
 +}
 +
 +PyObject *Injector::get_python(const std::string &what) {
-+  PyFormatter f;
++  PyJSONFormatter f;
 +
++  f.open_object_section("");
 +  if (what == "osd_map") {
-+    int64_t num_osds = Injector::get_num_osds();
-+    OSDMap *osdmap = new OSDMap;
-+    uuid_d id = uuid_d();
-+    osdmap->build_simple(g_ceph_context, 1, id, num_osds);
-+    Injector::mark_exists_osds(osdmap);
-+    osdmap->dump(&f);
++    int64_t new_num_osds = Injector::get_num_osds();
++    if (osd_map_global == nullptr || new_num_osds != num_osds) {
++      osd_map_global = new OSDMap;
++      uuid_d id = uuid_d();
++      osd_map_global->build_simple(g_ceph_context, 1, id, new_num_osds);
++      Injector::mark_exists_osds(osd_map_global);
++      num_osds = new_num_osds;
++    }
++    osd_map_global->dump(&f);
++    f.close_section();
 +  } else {
 +    Py_RETURN_NONE;
 +  }
-+  PyObject *obj = f.get();
-+  return obj;
++  return f.get();
 +}
 +
 +OSDMap *Injector::get_osdmap() {

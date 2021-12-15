@@ -14,18 +14,26 @@ from typing import List, Dict
 def get_data(path) -> Dict[str, List[dict]]:
     res = {}
     with open(path, 'r') as f:
-        lines = f.read().split("\n")
+        lines = f.read().rstrip().split("\n")
     p = 0
     for i in range(num_labels):
         label = lines[p]
         p += 1
         data = []
         for j in range(data_length):
-            splitted_line = lines[p].split(";")
-            print(splitted_line[1])
+            num_osds = lines[p]
+
+            p += 1
+            stats = ''
+            while 1:
+                stats += lines[p]
+                if lines[p] == "}":
+                    print('dx')
+                    break
+                p += 1
             data.append({
-                    "num_osds": int(splitted_line[0]),
-                    "stats": json.loads(splitted_line[1])
+                    "num_osds": int(num_osds),
+                    "stats": json.loads(stats)
                     })
             p += 1
         res[label] = data
@@ -50,6 +58,14 @@ style = {
             },
         "JSONFormatter with json deserialization cached": {
             "color": "blue",
+            "linestyle": "dashed"
+            },
+        "JSONFormatter with orjson deserialization": {
+            "color": "purple",
+            "linestyle": "solid"
+            },
+        "JSONFormatter with orjson deserialization cached": {
+            "color": "purple",
             "linestyle": "dashed"
             },
         "MsgpackFormatter": {

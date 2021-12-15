@@ -1,0 +1,118 @@
+From d3d0500eb18c9f9514cae001cdb2aa122426bd2a Mon Sep 17 00:00:00 2001
+From: root <root@localhost.localdomain>
+Date: Wed, 15 Dec 2021 08:23:44 +0100
+Subject: [PATCH] benchmark patch
+
+Signed-off-by: root <root@localhost.localdomain>
+---
+ src/mgr/ActivePyModules.cc   | 22 ++++++++++++++++------
+ src/mgr/Injector.cc          | 15 +++++++++------
+ src/pybind/mgr/mgr_module.py |  6 +++++-
+ 3 files changed, 30 insertions(+), 13 deletions(-)
+
+diff --git a/src/mgr/ActivePyModules.cc b/src/mgr/ActivePyModules.cc
+index 01303d04dfe..8aab8cf600a 100644
+--- a/src/mgr/ActivePyModules.cc
++++ b/src/mgr/ActivePyModules.cc
+@@ -196,14 +196,24 @@ PyObject *ActivePyModules::cacheable_get_python(const std::string &what)
+   return obj;
+ }
+ 
++char formatter = 'p';
+ PyObject *ActivePyModules::get_python(const std::string &what)
+ {
+   uint64_t ttl_seconds = g_conf().get_val<uint64_t>("mgr_ttl_cache_expire_seconds");
+ 
+   PyFormatter pf;
+   PyJSONFormatter jf;
++
++  if (what == "j") {
++    formatter = 'j';
++    Py_RETURN_NONE;
++  } else if(what == "p") {
++    formatter = 'p';
++    Py_RETURN_NONE;
++  }
++
+   // Use PyJSONFormatter if TTL cache is enabled.
+-  Formatter &f = ttl_seconds ? (Formatter&)jf : (Formatter&)pf;
++  Formatter &f = formatter == 'j' ? (Formatter&)jf : (Formatter&)pf;
+ 
+   if (what == "fs_map") {
+     without_gil_t no_gil;
+@@ -464,9 +474,8 @@ PyObject *ActivePyModules::get_python(const std::string &what)
+       if (auto [where, inserted] = did.insert(ip); inserted) {
+ 	f.dump_string("ip", ip);
+       }
+-      f.close_section();
+-    });
+-
++    }
++    f.close_section();
+   } else if (what == "have_local_config_map") {
+     f.dump_bool("have_local_config_map", have_local_config_map);
+   } else if (what == "active_clean_pgs"){
+@@ -496,8 +505,9 @@ PyObject *ActivePyModules::get_python(const std::string &what)
+     derr << "Python module requested unknown data '" << what << "'" << dendl;
+     Py_RETURN_NONE;
+   }
+-  with_gil_t with_gil{no_gil};
+-  if(ttl_seconds) {
++  without_gil_t no_gil;
++  no_gil.acquire_gil();
++  if(formatter == 'j') {
+     return jf.get();
+   } else {
+     return pf.get();
+diff --git a/src/mgr/Injector.cc b/src/mgr/Injector.cc
+index c0fa7ac7384..8870003e5c5 100644
+--- a/src/mgr/Injector.cc
++++ b/src/mgr/Injector.cc
+@@ -47,10 +47,13 @@ PyObject *Injector::get_python(const std::string &what) {
+ }
+ 
+ OSDMap *Injector::get_osdmap() {
+-  int64_t num_osds = Injector::get_num_osds();
+-  OSDMap *osdmap = new OSDMap;
+-  uuid_d id = uuid_d();
+-  osdmap->build_simple(g_ceph_context, 1, id, num_osds);
+-  Injector::mark_exists_osds(osdmap);
+-  return osdmap;
++  int64_t new_num_osds = Injector::get_num_osds();
++  if (osd_map_global == nullptr || new_num_osds != num_osds) {
++    osd_map_global = new OSDMap;
++    uuid_d id = uuid_d();
++    osd_map_global->build_simple(g_ceph_context, 1, id, new_num_osds);
++    Injector::mark_exists_osds(osd_map_global);
++    num_osds = new_num_osds;
++  }
++  return osd_map_global;
+ }
+diff --git a/src/pybind/mgr/mgr_module.py b/src/pybind/mgr/mgr_module.py
+index 391f81f0f01..cf5e681b29e 100644
+--- a/src/pybind/mgr/mgr_module.py
++++ b/src/pybind/mgr/mgr_module.py
+@@ -14,6 +14,7 @@ import logging
+ import errno
+ import functools
+ import json
++import orjson
+ import subprocess
+ import threading
+ from collections import defaultdict
+@@ -1313,8 +1314,11 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
+             or look at the C++ ``dump()`` methods to learn about them.
+         """
+         obj =  self._ceph_get(data_name)
++        self.log.error(str(type(obj)))
+         if isinstance(obj, bytes):
+-            obj = json.loads(obj)
++            # obj = json.loads(obj)
++            obj = orjson.loads(obj)
++
+ 
+         return obj
+ 
+-- 
+2.31.1
+
