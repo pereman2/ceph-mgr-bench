@@ -1,25 +1,42 @@
-From 2252fb6572119bf70378309806eb87d6960856e6 Mon Sep 17 00:00:00 2001
-From: Pere Diaz Bou <pdiazbou@redhat.com>
-Date: Mon, 10 May 2021 16:08:05 +0200
-Subject: [PATCH] mgr: inject osdmap PyObject* get_python
-
-Signed-off-by: Pere Diaz Bou <pdiazbou@redhat.com>
----
- src/common/options/global.yaml.in | 36 +++++++++++++++-----
- src/mgr/ActivePyModules.cc        |  2 +-
- src/mgr/CMakeLists.txt            |  1 +
- src/mgr/ClusterState.h            | 20 ++++++++---
- src/mgr/Injector.cc               | 56 +++++++++++++++++++++++++++++++
- src/mgr/Injector.h                | 19 +++++++++++
- 6 files changed, 120 insertions(+), 14 deletions(-)
- create mode 100644 src/mgr/Injector.cc
- create mode 100644 src/mgr/Injector.h
-
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index adb82e1e1ec..96a707098ab 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -886,6 +886,8 @@ if(NOT WIN32)
+ endif()
+ 
+ if (WITH_MGR)
++
++
+   add_dependencies(vstart-base ceph-mgr)
+ endif()
+ 
+@@ -996,4 +998,3 @@ if(DOXYGEN_FOUND)
+     rgw
+     COMMENT "Generate C++ documentation")
+ endif()
+-
 diff --git a/src/common/options/global.yaml.in b/src/common/options/global.yaml.in
-index 2a00edfe3e8..303c97286f7 100644
+index 565583c319e..62eae403a8a 100644
 --- a/src/common/options/global.yaml.in
 +++ b/src/common/options/global.yaml.in
-@@ -1489,11 +1489,11 @@ options:
+@@ -1025,11 +1025,11 @@ options:
+   level: advanced
+   desc: Allowing compression when on-wire encryption is enabled
+   long_desc: Combining encryption with compression reduces the level of security of
+-    messages between peers. In case both encryption and compression are enabled, 
+-    compression setting will be ignored and message will not be compressed. 
+-    This behaviour can be override using this setting. 
++    messages between peers. In case both encryption and compression are enabled,
++    compression setting will be ignored and message will not be compressed.
++    This behaviour can be override using this setting.
+   default: false
+-  see_also: 
++  see_also:
+   - ms_osd_compress_mode
+   flags:
+   - runtime
+@@ -1496,11 +1496,11 @@ options:
  - name: mon_initial_members
    type: str
    level: advanced
@@ -35,7 +52,7 @@ index 2a00edfe3e8..303c97286f7 100644
      number of monitors to establish a quorum with this setting.
    services:
    - mon
-@@ -2462,13 +2462,13 @@ options:
+@@ -2469,13 +2469,13 @@ options:
    desc: number of PGs for new pools
    fmt_desc: The default number of placement groups for a pool. The default
      value is the same as ``pg_num`` with ``mkpool``.
@@ -52,13 +69,19 @@ index 2a00edfe3e8..303c97286f7 100644
    - osd_pool_default_pg_autoscale_mode
    flags:
    - runtime
-@@ -6096,4 +6096,24 @@ options:
+@@ -4297,7 +4297,7 @@ options:
+   flags:
+   - create
+   with_legacy: true
+-- name: bluestore_use_optimal_io_size_for_min_alloc_size 
++- name: bluestore_use_optimal_io_size_for_min_alloc_size
+   type: bool
+   level: advanced
+   desc: Discover media optimal IO Size and use for min_alloc_size
+@@ -6120,3 +6120,21 @@ options:
+   default: 0
    services:
-   - rgw
-   - osd
--  with_legacy: true
-\ No newline at end of file
-+  with_legacy: true
+   - mgr
 +- name: mgr_inject
 +  type: bool
 +  level: dev
@@ -77,23 +100,47 @@ index 2a00edfe3e8..303c97286f7 100644
 +  flags:
 +  - runtime
 +  with_legacy: true
-+  services:
-+  - mgr
 diff --git a/src/mgr/ActivePyModules.cc b/src/mgr/ActivePyModules.cc
-index f95257a1721..6c7a79d91fd 100644
+index 0c08f3a02b5..56af8d4e552 100644
 --- a/src/mgr/ActivePyModules.cc
 +++ b/src/mgr/ActivePyModules.cc
-@@ -1269,7 +1269,7 @@ void ActivePyModules::config_notify()
-     // C++ code, and avoid any potential lock cycles.
-     dout(15) << "notify (config) " << name << dendl;
-     // workaround for https://bugs.llvm.org/show_bug.cgi?id=35984
--    finisher.queue(new LambdaContext([module=module](int r){ 
-+    finisher.queue(new LambdaContext([module=module](int r){
-       module->config_notify();
-     }));
+@@ -196,14 +196,24 @@ PyObject *ActivePyModules::cacheable_get_python(const std::string &what)
+   return obj;
+ }
+ 
++char formatter = 'p';
+ PyObject *ActivePyModules::get_python(const std::string &what)
+ {
+   uint64_t ttl_seconds = g_conf().get_val<uint64_t>("mgr_ttl_cache_expire_seconds");
+ 
+   PyFormatter pf;
+   PyJSONFormatter jf;
++
++  if (what == "j") {
++    formatter = 'j';
++    Py_RETURN_NONE;
++  } else if(what == "p") {
++    formatter = 'p';
++    Py_RETURN_NONE;
++  }
++
+   // Use PyJSONFormatter if TTL cache is enabled.
+-  Formatter &f = ttl_seconds ? (Formatter&)jf : (Formatter&)pf;
++  Formatter &f = formatter == 'j' ? (Formatter&)jf : (Formatter&)pf;
+ 
+   if (what == "fs_map") {
+     without_gil_t no_gil;
+@@ -504,7 +514,7 @@ PyObject *ActivePyModules::get_python(const std::string &what)
    }
+   without_gil_t no_gil;
+   no_gil.acquire_gil();
+-  if(ttl_seconds) {
++  if(formatter == 'j') {
+     return jf.get();
+   } else {
+     return pf.get();
 diff --git a/src/mgr/CMakeLists.txt b/src/mgr/CMakeLists.txt
-index 55147af4fc6..081c5bdf9b1 100644
+index d688030343e..e75d6ea0caa 100644
 --- a/src/mgr/CMakeLists.txt
 +++ b/src/mgr/CMakeLists.txt
 @@ -16,6 +16,7 @@ if(WITH_MGR)
@@ -102,8 +149,28 @@ index 55147af4fc6..081c5bdf9b1 100644
      Gil.cc
 +    Injector.cc
      Mgr.cc
+     mgr_perf_counters.cc
      MgrStandby.cc
-     MetricCollector.cc
+@@ -37,11 +38,18 @@ if(WITH_MGR)
+   if(WITH_LIBCEPHSQLITE)
+     target_link_libraries(ceph-mgr cephsqlite SQLite3::SQLite3)
+   endif()
++  set(FLATBUFFERS_SRC_DIR ${PROJECT_SOURCE_DIR}/flatbuffers)
++
++  # Add FlatBuffers directly to our build. This defines the `flatbuffers` target.
++  add_subdirectory(${FLATBUFFERS_SRC_DIR}
++    ${CMAKE_CURRENT_BINARY_DIR}/flatbuffers-build
++    EXCLUDE_FROM_ALL)
+   target_link_libraries(ceph-mgr
+     osdc client heap_profiler
+     global-static ceph-common
+     Boost::python${MGR_PYTHON_VERSION_MAJOR}${MGR_PYTHON_VERSION_MINOR}
+-    Python3::Python ${CMAKE_DL_LIBS} ${GSSAPI_LIBRARIES})
++    Python3::Python ${CMAKE_DL_LIBS} ${GSSAPI_LIBRARIES}
++    flatbuffers)
+   set_target_properties(ceph-mgr PROPERTIES
+     POSITION_INDEPENDENT_CODE ${EXE_LINKER_USE_PIE})
+   install(TARGETS ceph-mgr DESTINATION bin)
 diff --git a/src/mgr/ClusterState.h b/src/mgr/ClusterState.h
 index 7939cd8eb8f..cec57b875cd 100644
 --- a/src/mgr/ClusterState.h
@@ -145,10 +212,10 @@ index 7939cd8eb8f..cec57b875cd 100644
    // call cb(osdmap, pg_map, ...args) with the appropriate locks
 diff --git a/src/mgr/Injector.cc b/src/mgr/Injector.cc
 new file mode 100644
-index 00000000000..c0fa7ac7384
+index 00000000000..8870003e5c5
 --- /dev/null
 +++ b/src/mgr/Injector.cc
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,59 @@
 +// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 +// vim: ts=8 sw=2 smarttab
 +
@@ -198,25 +265,29 @@ index 00000000000..c0fa7ac7384
 +}
 +
 +OSDMap *Injector::get_osdmap() {
-+  int64_t num_osds = Injector::get_num_osds();
-+  OSDMap *osdmap = new OSDMap;
-+  uuid_d id = uuid_d();
-+  osdmap->build_simple(g_ceph_context, 1, id, num_osds);
-+  Injector::mark_exists_osds(osdmap);
-+  return osdmap;
++  int64_t new_num_osds = Injector::get_num_osds();
++  if (osd_map_global == nullptr || new_num_osds != num_osds) {
++    osd_map_global = new OSDMap;
++    uuid_d id = uuid_d();
++    osd_map_global->build_simple(g_ceph_context, 1, id, new_num_osds);
++    Injector::mark_exists_osds(osd_map_global);
++    num_osds = new_num_osds;
++  }
++  return osd_map_global;
 +}
 diff --git a/src/mgr/Injector.h b/src/mgr/Injector.h
 new file mode 100644
-index 00000000000..af4ec0bea7d
+index 00000000000..abfebfac8f4
 --- /dev/null
 +++ b/src/mgr/Injector.h
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,20 @@
 +// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 +// vim: ts=8 sw=2 smarttab
 +
 +#pragma once
 +
 +#include "osd/OSDMap.h"
++#include "flexbuffers.h"
 +
 +#include "PyUtil.h"
 +
@@ -230,6 +301,3 @@ index 00000000000..af4ec0bea7d
 +  static OSDMap *get_osdmap();
 +};
 +
--- 
-2.31.1
-

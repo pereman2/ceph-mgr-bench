@@ -1,0 +1,235 @@
+From db8930c190c9a888822b4319c0d884282c480319 Mon Sep 17 00:00:00 2001
+From: Pere Diaz Bou <pdiazbou@redhat.com>
+Date: Mon, 10 May 2021 16:08:05 +0200
+Subject: [PATCH] mgr: inject osdmap PyObject* get_python
+
+Signed-off-by: Pere Diaz Bou <pdiazbou@redhat.com>
+---
+ src/common/options/global.yaml.in | 36 +++++++++++++++-----
+ src/mgr/ActivePyModules.cc        |  2 +-
+ src/mgr/CMakeLists.txt            |  1 +
+ src/mgr/ClusterState.h            | 20 ++++++++---
+ src/mgr/Injector.cc               | 56 +++++++++++++++++++++++++++++++
+ src/mgr/Injector.h                | 19 +++++++++++
+ 6 files changed, 120 insertions(+), 14 deletions(-)
+ create mode 100644 src/mgr/Injector.cc
+ create mode 100644 src/mgr/Injector.h
+
+diff --git a/src/common/options/global.yaml.in b/src/common/options/global.yaml.in
+index 2a00edfe3e8..303c97286f7 100644
+--- a/src/common/options/global.yaml.in
++++ b/src/common/options/global.yaml.in
+@@ -1489,11 +1489,11 @@ options:
+ - name: mon_initial_members
+   type: str
+   level: advanced
+-  fmt_desc: The IDs of initial monitors in a cluster during startup. If 
+-    specified, Ceph requires an odd number of monitors to form an 
++  fmt_desc: The IDs of initial monitors in a cluster during startup. If
++    specified, Ceph requires an odd number of monitors to form an
+     initial quorum (e.g., 3).
+-  note: A *majority* of monitors in your cluster must be able to reach 
+-    each other in order to establish a quorum. You can decrease the initial 
++  note: A *majority* of monitors in your cluster must be able to reach
++    each other in order to establish a quorum. You can decrease the initial
+     number of monitors to establish a quorum with this setting.
+   services:
+   - mon
+@@ -2462,13 +2462,13 @@ options:
+   desc: number of PGs for new pools
+   fmt_desc: The default number of placement groups for a pool. The default
+     value is the same as ``pg_num`` with ``mkpool``.
+-  long_desc: With default value of `osd_pool_default_pg_autoscale_mode` being 
+-    `on` the number of PGs for new pools will start out with 1 pg, unless the 
++  long_desc: With default value of `osd_pool_default_pg_autoscale_mode` being
++    `on` the number of PGs for new pools will start out with 1 pg, unless the
+     user specifies the pg_num.
+   default: 32
+   services:
+   - mon
+-  see_also: 
++  see_also:
+   - osd_pool_default_pg_autoscale_mode
+   flags:
+   - runtime
+@@ -6096,4 +6096,24 @@ options:
+   services:
+   - rgw
+   - osd
+-  with_legacy: true
+\ No newline at end of file
++  with_legacy: true
++- name: mgr_inject
++  type: bool
++  level: dev
++  desc: Enable/disable injection of fake data in the mgr module
++  default: false
++  flags:
++  - runtime
++  with_legacy: true
++  services:
++  - mgr
++- name: mgr_inject_num_osds
++  type: int
++  level: dev
++  desc: Number of osds to inject in the mgr module
++  default: 0
++  flags:
++  - runtime
++  with_legacy: true
++  services:
++  - mgr
+diff --git a/src/mgr/ActivePyModules.cc b/src/mgr/ActivePyModules.cc
+index f95257a1721..6c7a79d91fd 100644
+--- a/src/mgr/ActivePyModules.cc
++++ b/src/mgr/ActivePyModules.cc
+@@ -1269,7 +1269,7 @@ void ActivePyModules::config_notify()
+     // C++ code, and avoid any potential lock cycles.
+     dout(15) << "notify (config) " << name << dendl;
+     // workaround for https://bugs.llvm.org/show_bug.cgi?id=35984
+-    finisher.queue(new LambdaContext([module=module](int r){ 
++    finisher.queue(new LambdaContext([module=module](int r){
+       module->config_notify();
+     }));
+   }
+diff --git a/src/mgr/CMakeLists.txt b/src/mgr/CMakeLists.txt
+index 55147af4fc6..081c5bdf9b1 100644
+--- a/src/mgr/CMakeLists.txt
++++ b/src/mgr/CMakeLists.txt
+@@ -16,6 +16,7 @@ if(WITH_MGR)
+     DaemonServer.cc
+     DaemonState.cc
+     Gil.cc
++    Injector.cc
+     Mgr.cc
+     MgrStandby.cc
+     MetricCollector.cc
+diff --git a/src/mgr/ClusterState.h b/src/mgr/ClusterState.h
+index 7939cd8eb8f..cec57b875cd 100644
+--- a/src/mgr/ClusterState.h
++++ b/src/mgr/ClusterState.h
+@@ -21,6 +21,7 @@
+ #include "osdc/Objecter.h"
+ #include "mon/MonClient.h"
+ #include "mon/PGMap.h"
++#include "mgr/Injector.h"
+ #include "mgr/ServiceMap.h"
+ 
+ class MMgrDigest;
+@@ -118,12 +119,21 @@ public:
+     return monc->with_monmap(std::forward<Args>(args)...);
+   }
+ 
+-  template<typename... Args>
+-  auto with_osdmap(Args &&... args) const ->
+-    decltype(objecter->with_osdmap(std::forward<Args>(args)...))
++  bool inject_python_on() const {
++    return g_conf().get_val<bool>("mgr_inject");
++  }
++  template <typename Callback, typename ...Args>
++  auto with_osdmap(Callback&& cb, Args&& ...args) const ->
++    decltype(objecter->with_osdmap(std::forward<Callback>(cb),
++	  std::forward<Args>(args)...))
+   {
+-    ceph_assert(objecter != nullptr);
+-    return objecter->with_osdmap(std::forward<Args>(args)...);
++    if(inject_python_on()) {
++      OSDMap *osdmap = Injector::get_osdmap();
++      return std::forward<Callback>(cb)(*osdmap, std::forward<Args>(args)...);
++    } else {
++      ceph_assert(objecter != nullptr);
++      return objecter->with_osdmap(std::forward<Callback>(cb), std::forward<Args>(args)...);
++    }
+   }
+ 
+   // call cb(osdmap, pg_map, ...args) with the appropriate locks
+diff --git a/src/mgr/Injector.cc b/src/mgr/Injector.cc
+new file mode 100644
+index 00000000000..c0fa7ac7384
+--- /dev/null
++++ b/src/mgr/Injector.cc
+@@ -0,0 +1,56 @@
++// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
++// vim: ts=8 sw=2 smarttab
++
++#include "mgr/Injector.h"
++
++#include "osd/OSDMap.h"
++
++#include "PyFormatter.h"
++
++#include "PyUtil.h"
++
++using namespace std;
++
++int num_osds = 0;
++OSDMap *osd_map_global = nullptr;
++int64_t Injector::get_num_osds() {
++  return g_conf().get_val<int64_t>("mgr_inject_num_osds");
++}
++
++// OSDMap::dump_osds filters not existent osds so we need
++// to set the state so we dump non existent ones too
++void Injector::mark_exists_osds(OSDMap *osdmap) {
++  for (int osd = 0; osd < Injector::get_num_osds(); osd++) {
++    osdmap->set_state(osd, CEPH_OSD_EXISTS);
++  }
++}
++
++PyObject *Injector::get_python(const std::string &what) {
++  PyJSONFormatter f;
++
++  f.open_object_section("");
++  if (what == "osd_map") {
++    int64_t new_num_osds = Injector::get_num_osds();
++    if (osd_map_global == nullptr || new_num_osds != num_osds) {
++      osd_map_global = new OSDMap;
++      uuid_d id = uuid_d();
++      osd_map_global->build_simple(g_ceph_context, 1, id, new_num_osds);
++      Injector::mark_exists_osds(osd_map_global);
++      num_osds = new_num_osds;
++    }
++    osd_map_global->dump(&f);
++    f.close_section();
++  } else {
++    Py_RETURN_NONE;
++  }
++  return f.get();
++}
++
++OSDMap *Injector::get_osdmap() {
++  int64_t num_osds = Injector::get_num_osds();
++  OSDMap *osdmap = new OSDMap;
++  uuid_d id = uuid_d();
++  osdmap->build_simple(g_ceph_context, 1, id, num_osds);
++  Injector::mark_exists_osds(osdmap);
++  return osdmap;
++}
+diff --git a/src/mgr/Injector.h b/src/mgr/Injector.h
+new file mode 100644
+index 00000000000..af4ec0bea7d
+--- /dev/null
++++ b/src/mgr/Injector.h
+@@ -0,0 +1,19 @@
++// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
++// vim: ts=8 sw=2 smarttab
++
++#pragma once
++
++#include "osd/OSDMap.h"
++
++#include "PyUtil.h"
++
++class Injector {
++private:
++  static int64_t get_num_osds();
++  static void mark_exists_osds(OSDMap *osdmap);
++
++public:
++  static PyObject *get_python(const std::string &what);
++  static OSDMap *get_osdmap();
++};
++
+-- 
+2.31.1
+
