@@ -16,6 +16,9 @@ cd src/pybind/
 
 # create images:
 for i in {1..10}; do  rbd create "${i}m" --size 10M; done
+# if you want mirrored things :P
+for i in {1..5}; do  rbd mirror image enable rbd/"${i}m" journal; done
+for i in {6..10}; do  rbd mirror image enable rbd/"${i}m" snapshot; done
 ```
 
 # FUNCTIONS MUSTN'T HAVE LINE BREAK IN BETWEEN because of selftest
@@ -62,25 +65,28 @@ def prof_rbd(total=1, size=10):
     ps.dump_stats('/ceph/rbd.stats')
     remove_images(size=size)
 
-def bench(total=10, limit=8192):
+def bench(total=10, limit=512):
+    # NOTE: 1024 will take forever in my computer, I recommend limitting to
+    # 512. You can check the flamegraph where you can see that most of the time
+    # the mgr does nothing.
     sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
     times = []
     import datetime
     date = datetime.datetime.now()
     #for test in ['default', 'ttl pool', 'ttl image' 'ttl both']:
-    for test in ['default']:
+    for test in ['ttl pool']:
         for s in sizes:
             if s > limit:
                 break
             create_images(size=s)
             t1 = time.time()
             for i in range(total):
-                RbdService.rbd_pool_list('rbd', test='ttl')
+                RbdService.rbd_pool_list('rbd', test=test)
             t2 = time.time()
             times.append(t2-t1)
             remove_images(size=s)
         with open('/ceph/bench.res', 'a+') as f:
-            f.write(f'Params: reps {times} date {str(date)}')
+            f.write(f'Params: reps {total} date {str(date)}')
             f.write('\n')
             f.write(f'sizes = {str(sizes)}')
             f.write('\n')
