@@ -15,10 +15,10 @@ cd src/pybind/
 
 
 # create images:
-for i in {1..10}; do  rbd create "${i}m" --size 10M; done
+for i in {1..6400}; do  rbd create "image${i}" --size 10M; done
 # if you want mirrored things :P
-for i in {1..5}; do  rbd mirror image enable rbd/"${i}m" journal; done
-for i in {6..10}; do  rbd mirror image enable rbd/"${i}m" snapshot; done
+for i in {1..5}; do  rbd mirror image enable rbd/"image${i}" journal; done
+for i in {6..10}; do  rbd mirror image enable rbd/"image${i}" snapshot; done
 ```
 
 # FUNCTIONS MUSTN'T HAVE LINE BREAK IN BETWEEN because of selftest
@@ -53,17 +53,22 @@ def create_images(start=0, size=10, pool_name='rbd'):
             pass
         
 
-def prof_rbd(total=1, size=10):
-    create_images(size=size)
+def prof_rbd(total=1, size=-1):
+    if size != -1:
+        create_images(size=size)
     pr = cProfile.Profile()
     pr.enable()
+    t1 = time.time()
     for i in range(total):
-        res = RbdService.rbd_pool_list('rbd')
+        res = RbdService.rbd_pool_list(['rbd'], offset=1000, limit=10)
+    t2 = time.time()
     pr.disable()
     ps = pstats.Stats(pr).sort_stats('cumulative')
     ps.print_stats()
     ps.dump_stats('/ceph/rbd.stats')
-    remove_images(size=size)
+    print(f'time avg taken {(t2-t1)/total}')
+    if size != -1:
+        remove_images(size=size)
 
 def bench(total=10, limit=512):
     # NOTE: 1024 will take forever in my computer, I recommend limitting to
