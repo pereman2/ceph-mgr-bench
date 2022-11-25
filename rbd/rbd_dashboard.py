@@ -15,7 +15,7 @@ cd src/pybind/
 
 
 # create images:
-for i in {1..6400}; do  rbd create "image${i}" --size 10M; done
+for i in {1..2000}; do  rbd create "image${i}" --size 10M; done
 # if you want mirrored things :P
 for i in {1..5}; do  rbd mirror image enable rbd/"image${i}" journal; done
 for i in {6..10}; do  rbd mirror image enable rbd/"image${i}" snapshot; done
@@ -70,7 +70,7 @@ def prof_rbd(total=1, size=-1):
     if size != -1:
         remove_images(size=size)
 
-def bench(total=10, limit=512):
+def bench(total=10, size_limit=512, limit=10):
     # NOTE: 1024 will take forever in my computer, I recommend limitting to
     # 512. You can check the flamegraph where you can see that most of the time
     # the mgr does nothing.
@@ -79,22 +79,41 @@ def bench(total=10, limit=512):
     import datetime
     date = datetime.datetime.now()
     #for test in ['default', 'ttl pool', 'ttl image' 'ttl both']:
-    for test in ['ttl pool']:
-        for s in sizes:
-            if s > limit:
-                break
-            create_images(size=s)
-            t1 = time.time()
-            for i in range(total):
-                RbdService.rbd_pool_list('rbd', test=test)
-            t2 = time.time()
-            times.append(t2-t1)
-            remove_images(size=s)
+    with open('/ceph/bench.res', 'a+') as f:
+        f.write(f'size;avg time')
+        f.write('\n')
+    for s in sizes:
+        if s > size_limit:
+            break
+        create_images(size=s)
+        t1 = time.time()
+        for i in range(total):
+            RbdService.rbd_pool_list(['rbd'], offset=0, limit=limit)
+        t2 = time.time()
+        times.append(t2-t1)
+        remove_images(size=s)
         with open('/ceph/bench.res', 'a+') as f:
-            f.write(f'Params: reps {total} date {str(date)}')
-            f.write('\n')
-            f.write(f'sizes = {str(sizes)}')
-            f.write('\n')
-            f.write(f'{test} = {str(times)}')
+            f.write(f'{s};{(t2-t1)/total}')
             f.write('\n')
     return times
+
+
+def test(pool_name=None):
+    pools = ['rbd']
+    if pool_name:
+        pools = [pool_name]
+    else:
+        for pool in range(1, 10):
+            pools.append('rbd_' + str(pool))
+        
+    print(pools)
+    import rbd
+    inst = rbd.RBD()
+    for pool in pools:
+        with mgr.rados.open_ioctx(pool) as ioctx:
+            print(inst.mirror_image_status_summary(ioctx))
+            if pool_name:
+                for i in inst.mirror_image_status_list(ioctx):
+                    print(i)
+
+    
